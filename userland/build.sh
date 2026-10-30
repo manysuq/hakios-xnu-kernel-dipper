@@ -163,8 +163,9 @@ fi
 
 # --- the small image ------------------------------------------------------------------------------
 rm -rf root
-mkdir -p root/sbin root/bin root/etc root/share root/LaunchDaemons
+mkdir -p root/sbin root/bin root/etc root/share root/LaunchDaemons root/flash root/redwood root/Cryptexes/OS root/Cryptexes/App
 cp obj/init root/sbin/init
+cp obj/init root/sbin/launchd
 cp obj/child root/bin/child
 # The data volume into the flash and back (src/var_store.c), and the job that saves it when a run
 # ends: the program and its job together, away from the iOS job list below, which several working
@@ -184,7 +185,7 @@ for d in $EXTRA_SHARE; do
 	cp -rL "$d" root/share/
 done
 if [ -d $IOS/rootfs/usr/lib ]; then
-	if [ -z "$PREBUILT" ]; then
+	if [ -z "$PREBUILT" ] && [ -z "$PREBUILT_DYN" ]; then
 		# ordinary dynamically linked programs of our own, built against the iOS SDK
 		$DYN -o obj/hello_dyn src/hello_dyn.c
 		$DYN -framework CoreFoundation -o obj/svc_test src/svc_test.c

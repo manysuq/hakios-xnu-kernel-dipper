@@ -46,7 +46,7 @@ Things to know:
 | `iokit/Kernel/GenericARMPE.cpp`, `MiniIOSurface.*`, `MiniIOMobileFramebuffer.cpp`, `MiniAppleKeyStore.cpp` | the platform expert and replacements for closed drivers: surfaces, the display, the key store |
 | `bsd/miscfs/apfs/`, `bsd/miscfs/ramfs/` | read-only APFS and a writable RAM file system |
 | `bsd/kern/kern_minimac.c`, `libkern/amfi/` | AMFI and Sandbox stubs |
-| `bsd/dev/hakios.input.c`, `hakios.goodix.c` | input: `/dev/hakios-touch`, the Goodix GT9916 touch controller |
+| `bsd/dev/hakios.input.c`, `hakios.goodix.c`, `hakios.fts.c` | input: `/dev/hakios-touch`, the Goodix GT9916 (redwood) and STMicroelectronics FTS (Mi 8) touch controllers |
 | `bsd/dev/hakios.cpufreq.c` | CPU clocks (Qualcomm EPSS) |
 | `bsd/dev/hakios.net.c`, `hakios.virtio_net.c` | the `en0` network interface |
 | `bsd/dev/hakios.adreno.c`, `iokit/Kernel/hakios.gpu.cpp` | the Adreno 642L GPU |

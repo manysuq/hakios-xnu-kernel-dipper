@@ -1502,10 +1502,14 @@ goodix_thread(__unused void *parameter, __unused wait_result_t result)
 void
 hakios_goodix_init(void)
 {
-	uint32_t enabled = 0;
+	uint32_t enabled = 0, dipper = 0;
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("touchscreen", &enabled, sizeof(enabled)) || !enabled) {
+	/* 1 only: 2 is hakios.fts.c, the STMicroelectronics controller of the Xiaomi Mi 8 */
+	if (PE_parse_boot_argn("dipper", &dipper, sizeof(dipper)) && dipper) {
+		return;
+	}
+	if (!PE_parse_boot_argn("touchscreen", &enabled, sizeof(enabled)) || enabled != 1) {
 		return;
 	}
 	PE_parse_boot_argn("touch_flip", &flip, sizeof(flip));

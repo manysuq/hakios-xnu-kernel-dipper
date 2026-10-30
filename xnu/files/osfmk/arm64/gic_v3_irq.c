@@ -72,7 +72,8 @@
 
 #define GIC_SGI_SIGNAL          0           /* cpu_signal(): another processor wants this one's attention */
 #define GIC_SGI_STOP            1           /* psci_smp_stop_here(): the system is going back to the boot loader */
-#define GIC_INTID_VTIMER        27          /* EL1 virtual timer PPI */
+#define GIC_INTID_VTIMER        27          /* EL1 virtual timer PPI (standard ARMv8) */
+#define GIC_INTID_VTIMER_QCOM   19          /* EL1 virtual timer PPI (Qualcomm SDM845 / Kryo 385) */
 #define GIC_INTID_SPI_MIN       32
 #define GIC_INTID_SPURIOUS_MIN  1020
 #define GIC_SPI_MOST            48          /* attached at a time */
@@ -310,7 +311,7 @@ gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub
 		}
 		gic_active_iar[cpu] = iar | GIC_IAR_TAKEN;
 
-		if (intid == GIC_INTID_VTIMER) {
+		if (intid == GIC_INTID_VTIMER || intid == GIC_INTID_VTIMER_QCOM) {
 			/* same sequence as the FIQ path in sleh_fiq() */
 			getCpuDatap()->cpu_decrementer = -1; /* Large */
 			rtclock_intr(TRUE);
@@ -418,7 +419,7 @@ gic_v3_irq_cpu_init(void)
 {
 	int cpu = cpu_number();
 	vm_offset_t gicr;
-	uint32_t mine = 1u << GIC_INTID_VTIMER;
+	uint32_t mine = (1u << GIC_INTID_VTIMER) | (1u << GIC_INTID_VTIMER_QCOM);
 
 	if (gicd_base == 0) {
 		DTEntry entry;
@@ -477,6 +478,7 @@ gic_v3_irq_cpu_init(void)
 	gic_write32(gicr + GICR_IGROUPR0, gic_read32(gicr + GICR_IGROUPR0) | mine);
 	gic_write32(gicr + GICR_IGRPMODR0, gic_read32(gicr + GICR_IGRPMODR0) & ~mine);
 	*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_INTID_VTIMER)) = GIC_PRIORITY_DEFAULT;
+	*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_INTID_VTIMER_QCOM)) = GIC_PRIORITY_DEFAULT;
 	gic_write32(gicr + GICR_ISENABLER0, mine);
 
 	/* Distributor: affinity routing, Group 1 enabled (normally already so) */

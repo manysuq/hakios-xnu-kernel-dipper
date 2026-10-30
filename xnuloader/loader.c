@@ -333,15 +333,17 @@ write_logs(const char *klog, uint64_t klog_len)
 	efi_block_io *bio = find_log_partition();
 
 	compose_logs(klog, klog_len);
-	if (bio == NULL) {
-		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
-		if (klog != NULL) {
-			print("\n== KERNEL LOG ==\n");
-			for (uint64_t i = 0; i < klog_len; i++) {
-				put_char(klog[i]);
-			}
-			print("\n== END OF LOG ==\n");
+#if 0
+	if (klog != NULL && klog_len > 0) {
+		print("\n== KERNEL LOG ==\n");
+		uint64_t from = klog_len > 3000 ? klog_len - 3000 : 0;
+		for (uint64_t i = from; i < klog_len; i++) {
+			put_char(klog[i]);
 		}
+		print("\n== END OF LOG ==\n");
+	}
+#endif
+	if (bio == NULL) {
 		return;
 	}
 	uint64_t bs = bio->media->block_size;
@@ -548,6 +550,13 @@ static const struct platform platform_redwood = {
 	 * 2.5 times as fast. The kernel uses the small ones only when the big ones are all busy
 	 * (XNU's machine_routines.c, ml_choose_slow_core_partners()).
 	 */
+	.small_cores = 0x0f,
+};
+
+static const struct platform platform_dipper = {
+	.name = "dipper", .io_base = 0x00100000, .io_size = 0x3FC00000,
+	.gic_dist = 0x17A00000, .gic_redist = 0x17A60000, .uart = 0, .log_other_cpu = 0,
+	.cores = 8, .core_shift = 8,
 	.small_cores = 0x0f,
 };
 
@@ -933,7 +942,7 @@ static uint64_t sound_len;
 #define OTHER_CPU_NOT_STARTED   1000    /* run_on_other_cpu(): the firmware said yes but the core never arrived */
 #define OTHER_CPU_HUNG          1001    /* ... the kernel stopped giving signs of life */
 #define START_SECONDS           5
-#define SILENCE_SECONDS         50
+#define SILENCE_SECONDS         0
 #define NOTE_SECONDS            24      /* how long the kernel's progress is written down as it happens */
 
 static void wdt_pet(void);
@@ -2166,7 +2175,7 @@ charger_start(void)
 	static const efi_guid qcom_charger_guid = QCOM_CHARGER_GUID;
 	efi_status ex_status, qcom_status, init_status = 0;
 
-	if (charger_enabled || PLAT != &platform_redwood) {
+	if (charger_enabled || (PLAT != &platform_redwood && PLAT != &platform_dipper)) {
 		return;
 	}
 	ex_status = BS->locate_protocol(&charger_ex_guid, NULL, (void **)&CHARGER_EX);
@@ -2323,7 +2332,7 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 		 * the kernel does it too, but whether that counts from another core is not known.
 		 * After that a kernel that neither returns nor hangs visibly meets the watchdog.
 		 */
-		if (wdt_armed && seconds_since(last_pet) >= 5 && seconds_since(started) < budget + 60) {
+		if (wdt_armed && seconds_since(last_pet) >= 5 && (!budget || seconds_since(started) < budget + 60)) {
 			wdt_pet();
 			last_pet = READ_SYSREG(CNTVCT_EL0);
 		}
@@ -2337,7 +2346,7 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 			if (live->heartbeat != last_beat) {
 				last_beat = live->heartbeat;
 				last_beat_at = READ_SYSREG(CNTVCT_EL0);
-			} else if (seconds_since(last_beat_at) >= SILENCE_SECONDS) {
+			} else if (SILENCE_SECONDS > 0 && seconds_since(last_beat_at) >= SILENCE_SECONDS) {
 				log_of_hung_kernel(live, slide);
 				status = OTHER_CPU_HUNG;
 			}
@@ -2406,9 +2415,24 @@ smc_call(uint64_t id, uint64_t a1, uint64_t a2, uint64_t *r1, uint64_t *r2)
 	return x0;
 }
 
+#define APSS_WDT_BASE  0x17980000ULL
+
 static void
 wdt_pet(void)
 {
+	if (PLAT == &platform_dipper) {
+		volatile uint32_t *wdt_rst = (volatile uint32_t *)(APSS_WDT_BASE + 0x04);
+		volatile uint32_t *wdt_en  = (volatile uint32_t *)(APSS_WDT_BASE + 0x08);
+		volatile uint32_t *apcs_rst = (volatile uint32_t *)(APSS_WDT_BASE + 0x38);
+		volatile uint32_t *apcs_en  = (volatile uint32_t *)(APSS_WDT_BASE + 0x40);
+
+		*wdt_en = 0;
+		*wdt_rst = 1;
+		*apcs_en = 0;
+		*apcs_rst = 1;
+		__asm__ volatile ("dmb sy" ::: "memory");
+		return;
+	}
 	if (wdt_armed) {
 		smc_call(VIRT_WDT_PET, 0, 0, NULL, NULL);
 	}
@@ -2418,6 +2442,10 @@ wdt_pet(void)
 static void
 wdt_set_ms(uint64_t ms)
 {
+	if (PLAT == &platform_dipper) {
+		wdt_pet();
+		return;
+	}
 	if (ms > 65000) {
 		ms = 65000;
 	}
@@ -2431,6 +2459,33 @@ static void
 wdt_arm(void)
 {
 	uint64_t ctl = 0, since = 0;
+
+	if (PLAT == &platform_dipper) {
+		volatile uint32_t *wdt_rst = (volatile uint32_t *)(APSS_WDT_BASE + 0x04);
+		volatile uint32_t *wdt_en  = (volatile uint32_t *)(APSS_WDT_BASE + 0x08);
+		volatile uint32_t *wdt_sts = (volatile uint32_t *)(APSS_WDT_BASE + 0x0C);
+		volatile uint32_t *wdt_bark = (volatile uint32_t *)(APSS_WDT_BASE + 0x10);
+		volatile uint32_t *wdt_bite = (volatile uint32_t *)(APSS_WDT_BASE + 0x14);
+
+		volatile uint32_t *apcs_rst = (volatile uint32_t *)(APSS_WDT_BASE + 0x38);
+		volatile uint32_t *apcs_en  = (volatile uint32_t *)(APSS_WDT_BASE + 0x40);
+
+		print("watchdog: dipper APSS_WDT sts=%x en=%x bark=%x bite=%x apcs_en=%x\n",
+		    (uint64_t)*wdt_sts, (uint64_t)*wdt_en, (uint64_t)*wdt_bark, (uint64_t)*wdt_bite, (uint64_t)*apcs_en);
+
+		*wdt_en = 0;
+		*wdt_rst = 1;
+		*wdt_bark = 0x7fffffff;
+		*wdt_bite = 0x7fffffff;
+		*apcs_en = 0;
+		*apcs_rst = 1;
+		__asm__ volatile ("dmb sy" ::: "memory");
+
+		print("watchdog: dipper APSS_WDT disabled (en=%x apcs_en=%x)\n",
+		    (uint64_t)*wdt_en, (uint64_t)*apcs_en);
+		wdt_armed = 1;
+		return;
+	}
 
 	if (PLAT != &platform_redwood) {
 		return; /* SMC is not routed anywhere useful on QEMU virt */
@@ -2457,6 +2512,7 @@ exception_handler(int64_t type, uint64_t *ctx)
 	print("loader image base %x (elr offset %x)\n", (uint64_t)(uintptr_t)&__ImageBase,
 	    ctx[EXC_CTX_ELR] - (uint64_t)(uintptr_t)&__ImageBase);
 	flush_log();
+	BS->stall(15000000);
 	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
 	for (;;) {
 	}
@@ -2961,6 +3017,12 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	for (const char *c = base_cmdline; *c && n < BOOT_LINE_LENGTH - 1; c++) {
 		ba->commandLine[n++] = *c;
 	}
+	/* tell the kernel which board this is, so that its drivers can pick the right hardware */
+	if (PLAT == &platform_dipper) {
+		for (const char *c = "dipper=1 "; *c && n < BOOT_LINE_LENGTH - 1; c++) {
+			ba->commandLine[n++] = *c;
+		}
+	}
 	/* one processor unless the payload asks for more (of two "cpus=" the kernel takes the first) */
 	if (!more_cores) {
 		for (const char *c = "cpus=1 "; *c && n < BOOT_LINE_LENGTH - 1; c++) {
@@ -2977,7 +3039,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 			ba->commandLine[n++] = *c;
 		}
 	}
-	if (wdt_armed) {
+	if (wdt_armed && PLAT == &platform_redwood) {
 		for (const char *c = "hv_wdt_pet=1 "; *c && n < BOOT_LINE_LENGTH - 1; c++) {
 			ba->commandLine[n++] = *c;
 		}
@@ -3269,20 +3331,22 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	if (loader_save_ctx() == 0) {
 		/*
 		 * On real hardware (under the Qualcomm hypervisor) dirty data-cache
-		 * lines do not survive the MMU-off round trip. UEFI stays resident,
-		 * so everything it owns must be written back to RAM first: clean
-		 * every allocated region in the memory map, then this stack again.
+		 * lines do not survive the MMU-off round trip. When jumping on the same CPU,
+		 * UEFI stays resident, so everything it owns must be written back to RAM first.
+		 * On another CPU, core 0 never turns off MMU/caches so this is not needed.
 		 */
-		map_size = sizeof(map_buf);
-		if (!EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &map_key, &desc_size, &desc_ver))) {
-			for (uint64_t off = 0; off < map_size; off += desc_size) {
-				efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
-				/* loader/boot-services/runtime code and data, ACPI tables; XNU's own window is handled below */
-				if (d->phys_start >= win_base && d->phys_start < win_base + win_size) {
-					continue;
-				}
-				if ((d->type >= 1 && d->type <= 6) || d->type == 9 || d->type == 10) {
-					clean_dcache(d->phys_start, d->phys_start + (d->pages << 12));
+		if (kernel_mpidr == this_mpidr) {
+			map_size = sizeof(map_buf);
+			if (!EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &map_key, &desc_size, &desc_ver))) {
+				for (uint64_t off = 0; off < map_size; off += desc_size) {
+					efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
+					/* loader/boot-services/runtime code and data, ACPI tables; XNU's own window is handled below */
+					if (d->phys_start >= win_base && d->phys_start < win_base + win_size) {
+						continue;
+					}
+					if ((d->type >= 1 && d->type <= 6) || d->type == 9 || d->type == 10) {
+						clean_dcache(d->phys_start, d->phys_start + (d->pages << 12));
+					}
 				}
 			}
 		}
@@ -3508,8 +3572,12 @@ usb_wait(uint8_t endpoint)
 		usb_device_event_data data;
 
 		USB->handle_event(&msg, &size, &data);
+		if (msg != UsbDeviceEventNoEvent) {
+			print("usb: event msg=%d state=%d\n", (uint64_t)msg, (uint64_t)data.device_state);
+		}
 		if (msg == UsbDeviceEventDeviceStateChange) {
 			usb_connected = (data.device_state == UsbDeviceStateConnected);
+			print("usb: state change -> %s (%d)\n", usb_connected ? "connected" : "disconnected", (uint64_t)data.device_state);
 			return -1;
 		}
 		/* with a kernel running, a host that went away must not keep this core from watching it */
@@ -3802,12 +3870,14 @@ usb_poll_command(void)
 static void
 usb_command_loop(void)
 {
-	screen_quiet = 1;
+	print("usb: fastboot server waiting for host...\n");
+	flush_log();
 	for (;;) {
 		char cmd[128];
 		int64_t n;
 
 		if (!usb_connected) {
+			print("usb: cable disconnected, waiting...\n");
 			usb_wait(0xff); /* returns on the next cable state change */
 			continue;
 		}
@@ -3932,6 +4002,8 @@ efi_main(efi_handle image, efi_system_table *st)
 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
 		if (SCREEN.base == 0xE1000000ULL) {
 			PLAT = &platform_redwood;
+		} else if (SCREEN.base == 0x9D400000ULL || (SCREEN.width == 1080 && SCREEN.height == 2248)) {
+			PLAT = &platform_dipper;
 		} else {
 			ramfb_phone_screen();
 		}
@@ -3952,6 +4024,11 @@ efi_main(efi_handle image, efi_system_table *st)
 	if (have_payload) {
 		run_kernel(0, 0);
 	}
-	reboot();
+	print("loader stopped, halting...\n");
+	flush_log();
+	for (;;) {
+		BS->stall(1000000);
+		wdt_pet();
+	}
 	return 0;
 }

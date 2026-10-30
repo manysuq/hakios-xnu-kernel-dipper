@@ -159,6 +159,15 @@ mount_cryptex(const char *name, const char *container, const char *flashdev)
 		}
 		strcpy(spec, join(flashdev, container, ""));
 		if (mount("apfs", at, MNT_RDONLY, (void *)spec) != 0) {
+			char from[64];
+			strcpy(from, join("/System/Cryptexes/", name, ""));
+			if (mount("bindfs", at, MNT_RDONLY, (void *)from) == 0) {
+				strcpy(what, join("the ", name, " cryptex (bind from "));
+				strcpy(what, join(what, from, ") on "));
+				strcpy(what, join(what, at, ""));
+				check(1, what);
+				return;
+			}
 			printf("  the %s cryptex from %s: %s\n", name, spec, strerror(errno));
 			strcpy(what, join("the ", name, " cryptex: in neither md0 nor the flash"));
 			check(0, what);
@@ -265,7 +274,13 @@ flash_root(const char *dev)
 	 */
 	mount_cryptex("OS", ",c=1", devpath);
 	mount_cryptex("App", ",c=2", devpath);
-	check(bind_dir("/private/preboot/redwood", "/redwood"), "this image back on /redwood");
+	struct stat rst;
+	if (stat("/private/preboot/redwood", &rst) == 0 && (rst.st_mode & S_IFMT) == S_IFDIR) {
+		check(bind_dir("/private/preboot/redwood", "/redwood"), "this image back on /redwood");
+	} else {
+		check(bind_dir("/private/preboot", "/redwood"), "this image back on /redwood");
+	}
+	base = "/redwood";
 	flash_root_mode = 1;
 }
 
@@ -1223,10 +1238,13 @@ run_command(char *line)
 			}
 		}
 		if (flash_root_mode && strcmp(argv[1], "/sbin/launchd.ios") == 0) {
-			argv[1] = "/sbin/launchd";      /* the root is iOS's own volume: its launchd is that */
+			struct stat lst;
+			if (stat("/sbin/launchd.ios", &lst) != 0) {
+				argv[1] = "/sbin/launchd";      /* the root is iOS's own volume: its launchd is that */
+			}
 		}
 		execve(argv[1], argv + 1, envp);
-		printf("%s: %s\n", argv[1], strerror(errno));
+		printf("%s: %s (errno %d)\n", argv[1], strerror(errno), errno);
 		return;
 	}
 

@@ -69,8 +69,8 @@ start(void)
 	put_number(fd, fd);
 	put(fd, ".\n");
 
-	/* Process 1 is not supposed to exit; doing so panics the kernel, which ends the test run. */
-	syscall3(SYS_exit, 0, 0, 0);
+	/* Process 1 is not supposed to exit; keep running so Darwin user space stays alive. */
+	// syscall3(SYS_exit, 0, 0, 0);
 	for (;;) {
 	}
 }
